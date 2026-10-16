@@ -1,0 +1,195 @@
+﻿import flet as ft
+from pathlib import Path
+import openpyxl
+
+def main(page: ft.Page):
+    page.title = "Calculadora de Ração - Samaria"
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.scroll = ft.ScrollMode.AUTO
+    page.window.width = 440
+    page.window.height = 650
+    page.window.resizable = False
+
+    # Variável para armazenar o caminho da planilha escolhida
+    caminho_planilha = ft.Text("Nenhuma planilha selecionada", italic=True, size=12, color=ft.colors.GREY_700)
+
+    # Campos de entrada
+    campo_quantidade = ft.TextField(label="Quantidade de peixes", text_align=ft.TextAlign.CENTER, keyboard_type=ft.KeyboardType.NUMBER)
+    campo_peso = ft.TextField(label="Peso total (gramas)", text_align=ft.TextAlign.CENTER, keyboard_type=ft.KeyboardType.NUMBER)
+    campo_tratos = ft.TextField(label="Tratos por dia", text_align=ft.TextAlign.CENTER, keyboard_type=ft.KeyboardType.NUMBER)
+    
+    # Texto de resultado
+    resultado = ft.Text("", size=14)
+
+    # Seletor de arquivos do celular/computador
+    def arquivo_selecionado(e: ft.FilePickerResultEvent):
+        if e.files:
+            nonlocal arquivo_path_obj
+            arquivo_path_obj = Path(e.files[0].path)
+            caminho_planilha.value = f"Planilha: {e.files[0].name}"
+            page.update()
+
+    picker = ft.FilePicker(on_result=arquivo_selecionado)
+    page.overlay.append(picker)
+
+    arquivo_path_obj = None
+
+    def calcular(e):
+        try:
+            if not arquivo_path_obj or not arquivo_path_obj.exists():
+                page.snack_bar = ft.SnackBar(ft.Text("Por favor, selecione um arquivo de planilha válido!"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            quantidade = int(campo_quantidade.value)
+            peso_total = float(campo_peso.value.replace(",", "."))
+            tratos = int(campo_tratos.value)
+
+            if quantidade <= 0 or peso_total <= 0 or tratos <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            page.snack_bar = ft.SnackBar(ft.Text("Informe valores numéricos maiores que zero."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        try:
+            arquivo = openpyxl.load_workbook(arquivo_path_obj, data_only=True, read_only=True)
+            if "Plan1" not in arquivo.sheetnames:
+                arquivo.close()
+                page.snack_bar = ft.SnackBar(ft.Text("A aba 'Plan1' não foi encontrada na planilha."))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            planilha = arquivo["Plan1"]
+            peso_medio = peso_total / quantidade
+
+            caracteristica_atual = None
+            fase_atual = None
+            recomendacao = None
+
+            for linha in range(11, 43):
+                minimo = planilha.cell(linha, 4).value
+                maximo = planilha.cell(linha, 5).value
+                caracteristica = planilha.cell(linha, 2).value
+                fase = planilha.cell(linha, 3).value
+                taxa = planilha.cell(linha, 9).value
+
+                if caracteristica is not None:
+                    caracteristica_atual = caracteristica
+                if fase is not None:
+                    fase_atual = fase
+
+                if not isinstance(minimo, (int, float)) or not isinstance(maximo, (int, float)):
+                    continue
+
+                if minimo <= peso_medio < maximo:
+                    recomendacao = {
+                        "minimo": minimo,
+                        "maximo": maximo,
+                        "caracteristica": caracteristica_atual,
+                        "fase": fase_atual,
+                        "taxa": taxa
+                    }
+                    break
+
+            arquivo.close()
+
+        except Exception as erro:
+            page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao ler a planilha: {erro}"))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if recomendacao is None:
+            page.snack_bar = ft.SnackBar(ft.Text(f"Não há faixa para o peso médio de {peso_medio:.2f} g."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        taxa = recomendacao["taxa"]
+        if not isinstance(taxa, (int, float)) or taxa <= 0:
+            page.snack_bar = ft.SnackBar(ft.Text("Taxa de alimentação inválida na tabela."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        racao_diaria = peso_total * taxa / 100
+        racao_por_trato = racao_diaria / tratos
+
+        resultado.value = (
+            f"Peso médio: {peso_medio:.2f} g por peixe\n"
+            f"Fase: {recomendacao['fase']}\n"
+            f"Ração recomendada: {recomendacao['caracteristica']}\n"
+            f"Faixa da tabela: {recomendacao['minimo']} a {recomendacao['maximo']} g\n"
+            f"Taxa de alimentação: {taxa}%\n\n"
+            f"Ração diária: {racao_diaria:.2f} g\n"
+            f"Tratos por dia: {tratos}\n"
+            f"Ração por trato: {racao_por_trato:.2f} g"
+        )
+        page.update()
+
+    def novo_calculo(e):
+        campo_quantidade.value = ""
+        campo_peso.value = ""
+        campo_tratos.value = ""
+        resultado.value = ""
+        page.update()
+
+    def mostrar_informacoes(e):
+        dlg = ft.AlertDialog(
+            title=ft.Text("Informações e limitações"),
+            content=ft.Text(
+                "Os resultados são calculados com base nos dados informados "
+                "e nas taxas de alimentação da planilha escolhida.\n\n"
+                "Confira os dados de entrada antes de utilizar os resultados na prática."
+            ),
+            actions=[ft.TextButton("Fechar", on_click=lambda _: close_dlg(dlg))]
+        )
+        page.dialog = dlg
+        dlg.open = True
+        page.update()
+
+    def close_dlg(dlg):
+        dlg.open = False
+        page.update()
+
+    # Montando a tela visual
+    page.add(
+        ft.Column([
+            ft.Text("Calculadora de Ração", size=22, weight=ft.FontWeight.BOLD),
+            ft.Divider(height=10, color=ft.colors.TRANSPARENT),
+            
+            # Botão de escolher arquivo
+            ft.ElevatedButton(
+                "Selecionar Planilha (.xlsx)",
+                icon=ft.icons.UPLOAD_FILE,
+                on_click=lambda _: picker.pick_files(allowed_extensions=["xlsx"])
+            ),
+            caminho_planilha,
+            
+            ft.Divider(height=10, color=ft.colors.TRANSPARENT),
+            campo_quantidade,
+            campo_peso,
+            campo_tratos,
+            
+            ft.ElevatedButton("Calcular ração", on_click=calcular, width=200),
+            
+            ft.Container(
+                content=resultado,
+                padding=10,
+                border_radius=5,
+                bgcolor=ft.colors.GREY_100
+            ),
+            
+            ft.Row([
+                ft.OutlinedButton("Novo cálculo", on_click=novo_calculo),
+                ft.OutlinedButton("Informações", on_click=mostrar_informacoes),
+            ], alignment=ft.MainAxisAlignment.CENTER)
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=15)
+    )
+
+ft.app(target=main)
